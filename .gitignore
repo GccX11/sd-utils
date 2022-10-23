@@ -1,0 +1,5 @@
+imgs/
+movies/
+__pycache__/
+experiment/
+.ipynb_checkpoints
