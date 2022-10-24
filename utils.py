@@ -13,6 +13,7 @@ import numpy as np
 from IPython.display import HTML
 
 
+import PIL
 import torch
 from torch import autocast
 from tqdm.auto import tqdm
@@ -279,23 +280,28 @@ def produce_latentsX(text_embeddings, height=512, width=512,
     global scheduler
     global im2im_scheduler
     global unet
-    
+
     if latents is None:
         latents = torch.randn((text_embeddings.shape[0] // 2, unet.in_channels, \
                                height // 8, width // 8))
+        sched = scheduler # use better scheduler
+        sched.set_timesteps(num_inference_steps)
+    else:
+        sched = im2im_scheduler # use the worse scheduler for im2im work
+        sched.set_timesteps(num_inference_steps)
+        
     latents = latents.to(device)
 
-    im2im_scheduler.set_timesteps(num_inference_steps)
     if start_step > 0:
         start_timestep = im2im_scheduler.timesteps[start_step]
         start_timesteps = start_timestep.repeat(latents.shape[0]).long()
 
         noise = torch.randn_like(latents)
-        latents = im2im_scheduler.add_noise(latents, noise, start_timesteps)
-
+        latents = sched.add_noise(latents, noise, start_timesteps)
+    
     latent_hist = [latents]
     with autocast('cuda'):
-        for i, t in tqdm(enumerate(im2im_scheduler.timesteps[start_step:])):
+        for i, t in tqdm(enumerate(sched.timesteps[start_step:])):
             # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes.
             latent_model_input = torch.cat([latents] * 2)
 
@@ -308,7 +314,8 @@ def produce_latentsX(text_embeddings, height=512, width=512,
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
             # compute the previous noisy sample x_t -> x_t-1
-            latents = im2im_scheduler.step(noise_pred, t, latents)['prev_sample']
+            latents = sched.step(noise_pred, t, latents)['prev_sample']
+            
             latent_hist.append(latents)
 
     if not return_all_latents:
@@ -326,11 +333,18 @@ def prompt_to_imgX(prompts, height=512, width=512, num_inference_steps=50,
     # Prompts -> text embeds
     text_embeds = get_text_embeds(prompts)
 
-    # Text embeds -> img latents
-    latents = produce_latentsX(
-        text_embeds, height=height, width=width, latents=latents,
-        num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
-        return_all_latents=return_all_latents, start_step=start_step)
+    if latents is not None:
+        # Text embeds -> img latents
+        latents = produce_latentsX(
+            text_embeds, height=height, width=width, latents=latents,
+            num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
+            return_all_latents=return_all_latents, start_step=start_step)
+    else:
+        # TODO: figure out what is different between these two functions
+        # and clean up and merge this code
+        latents = produce_latents(
+            text_embeds, height=height, width=width, latents=latents,
+            num_inference_steps=num_inference_steps, guidance_scale=guidance_scale)
 
     # Img latents -> imgs
     all_imgs = []
@@ -351,14 +365,13 @@ def im(text, start=0, end=50, h=512, w=512, prior=None):
 
 # get latents for an image
 # X -> Z
-def encode_im(im):
+def encode(im):
     return encode_img_latents([im])
 
 # get an image for latents
 # Z -> X
-def decode_im(latents):
+def decode(latents):
     return decode_img_latents(latents)
-
 
 # explore latents
 def perturb(latents, amount):
