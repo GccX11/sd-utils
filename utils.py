@@ -72,7 +72,6 @@ def init():
         beta_schedule='scaled_linear', num_train_timesteps=1000)
     
 
-
 def decode_img_latents(latents):
     global vae
     
@@ -286,14 +285,18 @@ def produce_latentsX(text_embeddings, height=512, width=512,
                                height // 8, width // 8))
         sched = scheduler # use better scheduler
         sched.set_timesteps(num_inference_steps)
+        latents = latents * scheduler.sigmas[0] # I think I need this?
     else:
         sched = im2im_scheduler # use the worse scheduler for im2im work
         sched.set_timesteps(num_inference_steps)
-        
+
+    latents = latents * sched.sigmas[0] # I think I need this?
+    sched.set_timesteps(num_inference_steps)
+
     latents = latents.to(device)
 
     if start_step > 0:
-        start_timestep = im2im_scheduler.timesteps[start_step]
+        start_timestep = sched.timesteps[start_step]
         start_timesteps = start_timestep.repeat(latents.shape[0]).long()
 
         noise = torch.randn_like(latents)
@@ -304,7 +307,15 @@ def produce_latentsX(text_embeddings, height=512, width=512,
         for i, t in tqdm(enumerate(sched.timesteps[start_step:])):
             # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes.
             latent_model_input = torch.cat([latents] * 2)
-
+            sigma = sched.sigmas[i]
+            latent_model_input = latent_model_input / ((sigma**2 + 1) ** 0.5)
+            
+            # TEST
+            print(t)
+            #t = t.type(torch.LongTensor) # convert t to long to be used
+            print(t)
+            
+            
             # predict the noise residual
             with torch.no_grad():
                 noise_pred = unet(latent_model_input, t, encoder_hidden_states=text_embeddings)['sample']
@@ -324,6 +335,78 @@ def produce_latentsX(text_embeddings, height=512, width=512,
     all_latents = torch.cat(latent_hist, dim=0)
     return all_latents
 
+
+def produce_latents_video(text_embeddings, height=512, width=512,
+                     num_inference_steps=50, guidance_scale=7.5, latents=None,
+                     return_all_latents=False, start_step=10):
+    global im2im_scheduler
+    global unet
+
+    if latents is None:
+        latents = torch.randn((text_embeddings.shape[0] // 2, unet.in_channels, \
+                               height // 8, width // 8))
+
+    im2im_scheduler.set_timesteps(num_inference_steps)
+
+    latents = latents.to(device)
+
+    if start_step > 0:
+        start_timestep = im2im_scheduler.timesteps[start_step]
+        start_timesteps = start_timestep.repeat(latents.shape[0]).long()
+
+        noise = torch.randn_like(latents)
+        latents = im2im_scheduler.add_noise(latents, noise, start_timesteps)
+
+    latent_hist = [latents]
+    with autocast('cuda'):
+        for i, t in tqdm(enumerate(im2im_scheduler.timesteps[start_step:])):
+            # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes.
+            latent_model_input = torch.cat([latents] * 2)
+
+            # predict the noise residual
+            with torch.no_grad():
+                noise_pred = unet(latent_model_input, t, encoder_hidden_states=text_embeddings)['sample']
+
+            # perform guidance
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+            # compute the previous noisy sample x_t -> x_t-1
+            latents = im2im_scheduler.step(noise_pred, t, latents)['prev_sample']
+
+            latent_hist.append(latents)
+
+    if not return_all_latents:
+        return latents
+
+    all_latents = torch.cat(latent_hist, dim=0)
+    return all_latents
+
+
+def prompt_to_video(prompts, height=512, width=512, num_inference_steps=50,
+                   guidance_scale=7.5, latents=None, return_all_latents=False,
+                   batch_size=2, start_step=0):
+    if isinstance(prompts, str):
+        prompts = [prompts]
+
+    # Prompts -> text embeds
+    text_embeds = get_text_embeds(prompts)
+
+    # Text embeds -> img latents
+    latents = produce_latents_video(
+        text_embeds, height=height, width=width, latents=latents,
+        num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
+        return_all_latents=return_all_latents, start_step=start_step)
+
+    # Img latents -> imgs
+    all_imgs = []
+    for i in tqdm(range(0, len(latents), batch_size)):
+        imgs = decode_img_latents(latents[i:i+batch_size])
+        all_imgs.extend(imgs)
+
+    return all_imgs
+
+
 def prompt_to_imgX(prompts, height=512, width=512, num_inference_steps=50,
                   guidance_scale=7.5, latents=None, return_all_latents=False,
                   batch_size=2, start_step=0):
@@ -333,18 +416,11 @@ def prompt_to_imgX(prompts, height=512, width=512, num_inference_steps=50,
     # Prompts -> text embeds
     text_embeds = get_text_embeds(prompts)
 
-    if latents is not None:
-        # Text embeds -> img latents
-        latents = produce_latentsX(
-            text_embeds, height=height, width=width, latents=latents,
-            num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
-            return_all_latents=return_all_latents, start_step=start_step)
-    else:
-        # TODO: figure out what is different between these two functions
-        # and clean up and merge this code
-        latents = produce_latents(
-            text_embeds, height=height, width=width, latents=latents,
-            num_inference_steps=num_inference_steps, guidance_scale=guidance_scale)
+    # Text embeds -> img latents
+    latents = produce_latentsX(
+        text_embeds, height=height, width=width, latents=latents,
+        num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
+        return_all_latents=return_all_latents, start_step=start_step)
 
     # Img latents -> imgs
     all_imgs = []
@@ -359,9 +435,18 @@ def prompt_to_imgX(prompts, height=512, width=512, num_inference_steps=50,
 # generate image based on text
 # find latents best matching the provided text
 # T -> Z -> Xp
-def im(text, start=0, end=50, h=512, w=512, prior=None):
+def im(text, start=0, end=50, h=512, w=512, prior=None, interpolate=False):
     return prompt_to_imgX(text, height=h, width=w, start_step=start,
-                          num_inference_steps=end, latents=prior)
+                          num_inference_steps=end, latents=prior,
+                          return_all_latents=interpolate)
+
+# generate image based on text
+# find latents best matching the provided text
+# T -> Z -> Xp
+def video(text, start=0, end=50, h=512, w=512, prior=None, interpolate=True):
+    return prompt_to_video(text, height=h, width=w, start_step=start,
+                          num_inference_steps=end, latents=prior,
+                          return_all_latents=interpolate)
 
 # get latents for an image
 # X -> Z
@@ -377,4 +462,6 @@ def decode(latents):
 def perturb(latents, amount):
     return perturb_latents(latents, scale=amount)
 
+def save_video(imgs, filename, fps=15):
+    imgs_to_video(imgs, video_name=filename, fps=fps)
 
