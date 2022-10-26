@@ -342,9 +342,7 @@ def produce_latents_video(text_embeddings, height=512, width=512,
     global im2im_scheduler
     global unet
 
-    if latents is None:
-        latents = torch.randn((text_embeddings.shape[0] // 2, unet.in_channels, \
-                               height // 8, width // 8))
+    assert latents is not None, "latents must be provided for this to be interesting"
 
     im2im_scheduler.set_timesteps(num_inference_steps)
 
