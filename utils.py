@@ -5,6 +5,8 @@
 # perturb latents for a given image to generate new images
 
 
+
+
 from base64 import b64encode
 
 import cv2
@@ -23,6 +25,9 @@ from diffusers import StableDiffusionPipeline, AutoencoderKL
 from diffusers import UNet2DConditionModel, PNDMScheduler, LMSDiscreteScheduler
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 from transformers import CLIPTextModel, CLIPTokenizer
+
+def print_stuff(stuff):
+    print(stuff)
 
 
 def init():
