@@ -7,8 +7,6 @@
 # perturb latents for a given image to generate new images
 
 
-
-
 from base64 import b64encode
 
 import cv2
@@ -27,9 +25,6 @@ from diffusers import StableDiffusionPipeline, AutoencoderKL
 from diffusers import UNet2DConditionModel, PNDMScheduler, LMSDiscreteScheduler
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 from transformers import CLIPTextModel, CLIPTokenizer
-
-def print_stuff(stuff):
-    print(stuff)
 
 
 def init():
@@ -199,13 +194,12 @@ def image_grid(imgs, rows, cols):
     """
     assert len(imgs) == rows*cols
 
-    w,h = imgs[0][-1].size
-    print(w,h)
+    w,h = imgs[0].size
     grid = Image.new('RGB', size=(cols*w, rows*h))
     grid_w, grid_h = grid.size
 
     for i, img in enumerate(imgs):
-        grid.paste(img[-1], box=(i%cols*w, i//cols*h))
+        grid.paste(img, box=(i%cols*w, i//cols*h))
     return grid
 
 
@@ -404,7 +398,40 @@ def embed_to_img(text_embeds, num_steps=50, start_latent=None):
     return all_imgs, start_latent
 
 
-def prompt_to_img(prompts, height=512, width=512, num_inference_steps=50,
+def prompt_to_latent(prompts, height=512, width=512, num_inference_steps=10,
+                  guidance_scale=7.5, latents=None, return_all_latents=False,
+                  batch_size=2, start_step=0):
+    """
+    prompt_to_latent
+    
+    :param prompts: 
+    :param height: 
+    :param width: 
+    :param num_inference_steps: 
+    :param guidance_scale: 
+    :param latents: 
+    :param return_all_latents:
+    :param batch_size: 
+    :param start_step: 
+    :return: 
+    """
+
+    if isinstance(prompts, str):
+        prompts = [prompts]
+
+    # Prompts -> text embeds
+    text_embeds = get_text_embeds(prompts)
+
+    # Text embeds -> img latents
+    latents = produce_latents(
+        text_embeds, height=height, width=width, latents=latents,
+        num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
+        return_all_latents=return_all_latents, start_step=start_step)
+
+    return latents
+
+
+def prompt_to_img(prompts, height=512, width=512, num_inference_steps=10,
                   guidance_scale=7.5, latents=None, return_all_latents=False,
                   batch_size=2, start_step=0):
     """
@@ -446,7 +473,7 @@ def prompt_to_img(prompts, height=512, width=512, num_inference_steps=50,
 #################################### API ####################################
 
 
-def im(text, start=0, end=50, h=512, w=512, prior=None, interpolate=False):
+def im(text, start=0, end=10, h=512, w=512, prior=None, interpolate=False):
     """
     im generates images based on text
     T -> Z -> X
